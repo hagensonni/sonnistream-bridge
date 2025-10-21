@@ -1,54 +1,60 @@
-// server.js — Paso 1: aceptar el WebSocket de Twilio Media Streams y registrar eventos
+// server.js — WS en /ws + endpoint /status para eventos de Twilio
 import express from "express";
 import { WebSocketServer } from "ws";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.get("/", (_req, res) => res.send("✅ Sonnistream Bridge: WS endpoint ready at /ws"));
+// Para leer texto sin rechazar content-type de Twilio (application/x-www-form-urlencoded o text/plain)
+app.use(express.text({ type: "*/*" }));
+
+app.get("/", (_req, res) => res.send("✅ Sonnistream Bridge: WS at /ws, status at /status"));
+
+// --- Endpoint para statusCallback del <Stream> ---
+app.post("/status", (req, res) => {
+  const body = req.body || "";
+  // Intenta parsear si parece JSON; si no, solo loguea el texto
+  try {
+    const data = JSON.parse(body);
+    console.log("📡 Stream status event:", data);
+  } catch {
+    console.log("📡 Stream status raw:", body);
+  }
+  res.status(200).send("ok");
+});
 
 const server = app.listen(PORT, () => {
   console.log(`✅ HTTP server listening on port ${PORT}`);
 });
 
-// Crea un servidor WS en la ruta /ws
+// --- WebSocket /ws para Twilio Media Streams ---
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", (ws) => {
   console.log("🔗 Twilio connected to /ws");
 
-  // Heartbeat para mantener viva la conexión
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
 
-  // Maneja mensajes entrantes de Twilio (JSON con start/media/stop)
   ws.on("message", (data) => {
     try {
       const msg = JSON.parse(data.toString());
-
       switch (msg.event) {
         case "start":
           console.log("▶️ Stream started:", msg.streamSid);
           break;
-
         case "media":
-          // msg.media.payload es audio base64 (PCM μ-law 8k)
-          // No lo procesamos aún: solo contamos paquetes para verificar flujo
-          if (!ws._packets) ws._packets = 0;
-          ws._packets++;
+          ws._packets = (ws._packets || 0) + 1;
           if (ws._packets % 50 === 0) {
             console.log(`🎧 received media packets: ${ws._packets}`);
           }
           break;
-
         case "mark":
           console.log("🔖 mark:", msg.mark?.name);
           break;
-
         case "stop":
           console.log("⏹ Stream stopped:", msg.streamSid);
           break;
-
         default:
           console.log("📨 Other event:", msg.event);
       }
@@ -57,12 +63,10 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
-    console.log("❌ Twilio disconnected from /ws");
-  });
+  ws.on("close", () => console.log("❌ Twilio disconnected from /ws"));
 });
 
-// Ping interval para mantener conexiones
+// Mantener viva la conexión
 setInterval(() => {
   wss.clients.forEach((socket) => {
     if (!socket.isAlive) return socket.terminate();
